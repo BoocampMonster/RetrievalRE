@@ -10,6 +10,7 @@ from .dataset import KlueDataset
 from .open_book_data_store import OpenBookDataStore
 from .special_tokens import SPECIAL_ENTITY_MARKERS, get_relation_labels
 
+import pandas as pd
 
 class Evaluator:
     def __init__(self, args):
@@ -27,11 +28,14 @@ class Evaluator:
         
         # Verbalization
         relation_labels = get_relation_labels(num_labels=len(relations))
-        self.relation_label_map = {r: l for r, l in zip(relations, relation_labels)}
+        relation_label_map = {r: l for r, l in zip(relations, relation_labels)}
+        self.label_relation_map = {l: r for l, r in zip(relation_labels, relations)}
              
         # Load tokenizer and add special tokens
         self.tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-                
+        
+        self.relation_ids = self.tokenizer.additional_special_tokens_ids[-30:]
+        
         # Load model and resize token embeddings
         self.model = AutoModelForMaskedLM.from_pretrained(args.model_path)
         self.model = self.model.to(self.device)
@@ -45,10 +49,10 @@ class Evaluator:
             dataset=KlueDataset(
                 tokenizer=self.tokenizer,
                 data_path=args.data_path,
-                data_fn=args.valid_data_fn,
+                data_fn=args.test_data_fn,
                 cache_path=args.cache_path,
-                cache_fn=f"{self.args.plm.replace('/', '_')}.cache.valid",
-                relation_label_map=self.relation_label_map,
+                cache_fn=f"{self.args.plm.replace('/', '_')}.cache.test",
+                relation_label_map=relation_label_map,
                 max_seq_length=args.max_seq_length,
                 special_entity_markers=SPECIAL_ENTITY_MARKERS
             ),
@@ -59,21 +63,24 @@ class Evaluator:
         )
         
     def run(self):
-        avg_score = self.evaluate()
+        score = self.evaluate()
         
-        print(f"Evaluation Result : {avg_score:.2f}")
+        print(f"Evaluation F1 Score Result : {score:.2f}")
             
     def evaluate(self):
         self.model.eval()
         
-        scores = []
-        avg_score = 0.0
+        score = 0.0
+        
+        output_id = []
+        output_pred = []
+        output_prob = []
+        output_label = []
         
         with torch.no_grad():
             progress_bar = tqdm(self.eval_data_loader)
             for batch in progress_bar:
-                progress_bar.set_description(f"[Evaluation] Avg F1 Score : {avg_score:.2f}")
-                inputs, labels = batch
+                ids, inputs, labels = batch
             
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
                 labels = labels.to(self.device)
@@ -96,16 +103,30 @@ class Evaluator:
                 )
                 
                 logits = self.args.logit_ratio * knn_logits + (1 - self.args.logit_ratio) * mask_logits
+                # logits = mask_logits
                 
-                f1_score = self.calc_f1_score(
-                    true_y=labels.tolist(), 
-                    pred_y=torch.argmax(torch.softmax(logits, dim=-1), dim=-1).tolist()
-                )
+                # prob = torch.nn.functional.pad(torch.softmax(logits[:, -29:], dim=-1), (1, 0), "constant", 0)
+                prob = torch.softmax(logits[:, -30:], dim=-1)
                 
-                scores.append(f1_score)
-                avg_score = (sum(scores) / len(scores)) * 100
-            
-        return avg_score
+                pred_y = torch.argmax(prob, dim=-1) + (logits.shape[-1] - 30)
+                
+                output_id.extend(ids.detach().cpu().tolist())
+                output_pred.extend(pred_y.detach().cpu().tolist())
+                output_prob.extend(prob.detach().cpu().tolist())
+                output_label.extend(labels.detach().cpu().tolist())
+        
+        score = self.calc_f1_score(
+            true_y=output_label, 
+            pred_y=output_pred
+        ) * 100
+        
+        pred_answer = [self.label_relation_map[self.tokenizer.convert_ids_to_tokens(label)] for label in output_pred]
+        
+        output = pd.DataFrame({'id':output_id,'pred_label':pred_answer,'probs':output_prob,})
+        output.sort_values('id', inplace=True)
+        output.to_csv('./submission.csv', index=False) # 최종적으로 완성된 예측한 라벨 csv 파일 형태로 저장.
+        
+        return score
     
     def get_mask_logits(self, logits, mask_idxes):
         return logits[torch.arange(logits.shape[0]), mask_idxes]
@@ -132,7 +153,6 @@ class Evaluator:
             
         return knn_logits
         
-    @staticmethod
-    def calc_f1_score(true_y, pred_y):
-        return f1_score(true_y, pred_y, average="micro")
+    def calc_f1_score(self, true_y, pred_y):
+        return f1_score(true_y, pred_y, average="micro", labels=self.relation_ids[-29:])
     

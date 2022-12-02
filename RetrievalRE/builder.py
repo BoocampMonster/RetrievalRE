@@ -41,9 +41,9 @@ class Builder:
             dataset=KlueDataset(
                 tokenizer=self.tokenizer,
                 data_path=args.data_path,
-                data_fn=args.train_data_fn,
+                data_fn=args.build_data_fn,
                 cache_path=args.cache_path,
-                cache_fn=f"{self.args.plm.replace('/', '_')}.cache.train",
+                cache_fn=f"{self.args.plm.replace('/', '_')}.cache.build",
                 relation_label_map=self.relation_label_map,
                 max_seq_length=args.max_seq_length,
                 special_entity_markers=SPECIAL_ENTITY_MARKERS
@@ -66,7 +66,7 @@ class Builder:
             for batch in progress_bar:
                 progress_bar.set_description(f"Build open-book data store")
                 
-                inputs, labels = batch
+                ids, inputs, labels = batch
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
                 labels = labels.to(self.device)
                 

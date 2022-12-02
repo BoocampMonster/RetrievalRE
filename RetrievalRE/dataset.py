@@ -4,8 +4,36 @@ import pickle as pkl
 from tqdm import tqdm
 from torch.utils.data import Dataset
 
+# from datasets import load_dataset
+import pandas as pd
+from sklearn.model_selection import StratifiedKFold
+
+from ast import literal_eval
+
+def parse_entities(entities: pd.Series) -> pd.Series:
+    parsed = entities.apply(lambda entity: literal_eval(entity))
+    return parsed
+
+def read_csv(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df.subject_entity = parse_entities(df.subject_entity)
+    df.object_entity = parse_entities(df.object_entity)
+    return df
 
 class KlueDataset(Dataset):
+    
+    # klue_re = load_dataset('klue', 're')
+    # train = read_csv('~/dataset/train/train.csv')
+    # test = read_csv('~/dataset/test/dev_data.csv')
+    
+    # skf = StratifiedKFold(n_splits=5) # train : valid = 0.8 : 0.2
+    # train_index, val_index = next(iter(skf.split(klue_re['train'], klue_re['train']['label'])))
+    # train_index, val_index = next(iter(skf.split(train, train['label'])))
+
+    # build = train
+    # train = build.iloc[train_index,:]
+    # val = build.iloc[val_index,:]
+    # test = klue_re['validation'].to_pandas()
     
     def __init__(self, tokenizer, data_path, data_fn, cache_path, cache_fn, relation_label_map, max_seq_length=256, special_entity_markers=["[E1]", "[/E1]", "[E2]", "[/E2]"]):
         self.data = []
@@ -17,7 +45,8 @@ class KlueDataset(Dataset):
         cache_full_path = os.path.join(cache_path, cache_fn)
         
         if not os.path.isfile(cache_full_path):
-            for data in tqdm(self.read(path=data_path, fn=data_fn), desc="Load KLUE dataset"):
+            for i, data in tqdm(self.read(path=data_path, fn=data_fn), desc="Load KLUE dataset"):
+            # for data in tqdm(self.read(path=data_path, fn=data_fn), desc="Load KLUE dataset"):
                 # Sample Data
                 # {
                 #     'guid': 'klue-re-v1_train_00000', 
@@ -40,6 +69,10 @@ class KlueDataset(Dataset):
                 
                 # Prompt Template Format
                 # - [CLS] Steve Jobs, co-founder of Apple.[SEP] Apple [MASK] Steve Jobs [SEP]
+                
+                # if data["label"] == 'no_relation':
+                #     continue
+                
                 PROMPT_TEMPLATE = "[X] [SEP] [SUB_MARKER] [SUBJECT] [/SUB_MARKER] [MASK] [OBJ_MARKER] [OBJECT] [/OBJ_MARKER]"
                 for origin_str, replace_str in [
                     ("[X]", data['sentence']),
@@ -64,11 +97,14 @@ class KlueDataset(Dataset):
                 
                 label_id = self.tokenizer(
                     self.relation_label_map[data["label"]],
+                    # '[LABEL{0}]'.format(data["label"] + 1),
                     add_special_tokens=False,
                     return_tensors="pt"
                 )["input_ids"][0]
                 
                 self.data.append({
+                    # "ids": int(data['guid'][-5:]),
+                    "ids": i,
                     "inputs": {
                         "input_ids": input_tensors['input_ids'].squeeze(dim=0),
                         "token_type_ids": input_tensors['token_type_ids'].squeeze(dim=0),
@@ -88,8 +124,18 @@ class KlueDataset(Dataset):
              
     @staticmethod
     def read(path, fn):
-        with open(os.path.join(path, fn), "r") as fp:
-            return json.load(fp)
+        assert(False)
+        
+        if 'train' in fn:
+            return KlueDataset.train.iterrows()
+        if 'dev' in fn:
+            return KlueDataset.val.iterrows()
+        if 'test' in fn:
+            return KlueDataset.test.iterrows()
+            # with open(os.path.join(path, fn), "r") as fp:
+            #     return json.load(fp)
+        if 'build' in fn:
+            return KlueDataset.build.iterrows()
     
     @classmethod
     def load_relations(cls, data_path, data_fn, cache_path):
@@ -138,4 +184,11 @@ class KlueDataset(Dataset):
     def __getitem__(self, idx):
         data = self.data[idx]
         
-        return data["inputs"], data["label"]
+        return data['ids'], data["inputs"], data["label"]    
+    
+    def get_labels(self):
+        labels = []
+        for d in self.data:
+            labels.append(d["label"])
+        return labels
+    
